@@ -10,4 +10,4 @@ usv-scheduling-hgnn-drl/
 
 依赖
 python 3.8.1及以上
-pip install torch torch_geometric gym numpy pandas matplotlib tqdm
+pip install torch torch_geometric gym numpy pandas matplotlib tqdm dgl
