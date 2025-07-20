@@ -2,7 +2,6 @@ import numpy as np
 import torch
 import dgl
 
-
 def build_heterogeneous_graph(usv_features, task_features, usv_task_distances, eta=2):
     """
     构建异构图，任务节点仅与η个最近邻任务聚合
@@ -15,9 +14,10 @@ def build_heterogeneous_graph(usv_features, task_features, usv_task_distances, e
     # 对每个任务，选择η个最近邻任务（排除自身）
     task_edges = []
     for i in range(len(task_features)):
-        neighbors = np.argsort(task_distances[i])[1:eta + 1]  # 排除自身，取前η个
-        for j in neighbors:
-            task_edges.append((i, j))
+        if eta > 0:
+            neighbors = np.argsort(task_distances[i])[1:eta + 1]  # 排除自身，取前η个
+            for j in neighbors:
+                task_edges.append((i, j))
 
     # 构建USV-任务边
     usv_task_edges = []
@@ -37,7 +37,6 @@ def build_heterogeneous_graph(usv_features, task_features, usv_task_distances, e
     graph.nodes['task'].data['feat'] = torch.tensor(task_features, dtype=torch.float32)
 
     return graph
-
 
 def calculate_usv_task_distances(usv_positions, task_positions):
     """
