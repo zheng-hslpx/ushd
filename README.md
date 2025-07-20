@@ -22,6 +22,7 @@ Matplotlib版本: 3.7.5
 Gym版本: 0.26.2
 TQDM版本: 4.67.1
 DGL版本: 1.1.2+cu117
+visdom版本: 0.2.4
 
 ===== CUDA配置 =====
 GPU数量: 1
