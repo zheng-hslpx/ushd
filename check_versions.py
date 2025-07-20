@@ -1,14 +1,3 @@
-# PyTorch
-#import torch
-#print(torch.cuda.is_available())  # 输出True表示GPU可用
-
-# TensorFlow
-#import tensorflow as tf
-#print(tf.config.list_physical_devices('GPU'))  # 应显示GPU设备信息
-
-#import torch
-#print(torch.__version__)      # PyTorch版本
-#print(torch.version.cuda)
 import sys
 import torch
 import numpy
@@ -17,6 +6,7 @@ import matplotlib
 import gym
 import tqdm
 import dgl
+import visdom
 
 # 尝试导入torch_geometric，处理可能的导入错误
 try:
@@ -38,6 +28,8 @@ print(f"Matplotlib版本: {matplotlib.__version__}")
 print(f"Gym版本: {gym.__version__}")
 print(f"TQDM版本: {tqdm.__version__}")
 print(f"DGL版本: {dgl.__version__}")
+print(f"visdom版本: {visdom.__version__}")
+
 
 # 检查PyTorch CUDA可用性
 if torch.cuda.is_available():
