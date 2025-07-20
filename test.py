@@ -7,7 +7,9 @@ from env.usv_env import USVSchedulingEnv
 from env.state_representation import build_heterogeneous_graph, calculate_usv_task_distances
 
 
-def test(model_path, num_tests=100, num_usvs=3, num_tasks=5, device=None, eta=2):
+def test(model_path, num_tests=100, num_usvs=3, num_tasks=5, area_size_x=(0, 100), area_size_y=(0, 100),
+         processing_time_range=(5, 15), battery_capacity=100, speed_range=(5, 10), charge_time=5,
+         device=None, eta=2):
     # 关键修复：调整num_tasks使action_dim与训练时一致（3*5=15，匹配checkpoint的15）
     # 若训练时的参数不同，需修改为训练时的num_usvs和num_tasks
     print(f"使用的动作空间维度: {num_usvs * num_tasks}（需与训练时一致）")
@@ -51,7 +53,8 @@ def test(model_path, num_tests=100, num_usvs=3, num_tasks=5, device=None, eta=2)
 
     for test_idx in range(num_tests):
         # 初始化环境（使用与action_dim匹配的任务数量）
-        env = USVSchedulingEnv(num_usvs, num_tasks)
+        env = USVSchedulingEnv(num_usvs, num_tasks, area_size_x, area_size_y,
+                               processing_time_range, battery_capacity, speed_range, charge_time)
         state = env.reset()
         done = False
 
@@ -101,13 +104,25 @@ if __name__ == "__main__":
     # 若训练时是3个USV和5个任务（3*5=15），则此处保持一致
     MODEL_PATH = "model/ppo_best.pt"
     NUM_TESTS = 50
-    NUM_USVS = 3  # 与训练时一致
-    NUM_TASKS = 5  # 与训练时一致（3*5=15，匹配checkpoint的action_dim=15）
+    NUM_USVS = 4  # 与训练时一致
+    NUM_TASKS = 6  # 与训练时一致（4*6=24）
+    area_size_x = (0, 200)  # 任务点X坐标值范围
+    area_size_y = (0, 200)  # 任务点Y坐标值范围
+    processing_time_range = (10, 20)  # 任务的访问时间范围
+    battery_capacity = 120  # 电池容量
+    speed_range = (6, 12)  # 无人船速度范围
+    charge_time = 6  # 充电时间
 
     test(
         model_path=MODEL_PATH,
         num_tests=NUM_TESTS,
         num_usvs=NUM_USVS,
         num_tasks=NUM_TASKS,
+        area_size_x=area_size_x,
+        area_size_y=area_size_y,
+        processing_time_range=processing_time_range,
+        battery_capacity=battery_capacity,
+        speed_range=speed_range,
+        charge_time=charge_time,
         eta=2
     )
