@@ -3,10 +3,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.distributions import Categorical
 
-
 class Memory:
     """存储智能体与环境交互的经验数据"""
-
     def __init__(self):
         self.states = []  # 存储异构图状态
         self.actions = []  # 存储选择的动作
@@ -27,11 +25,9 @@ class Memory:
 
 class PPO(nn.Module):
     """近端策略优化算法的实现"""
-
     def __init__(self, hgnn, action_dim, lr, gamma, eps_clip, K_epochs, device):
         """
         初始化PPO模型
-
         参数:
             hgnn: 异构图神经网络，用于特征提取
             action_dim: 动作空间维度
@@ -86,16 +82,13 @@ class PPO(nn.Module):
             list(self.hgnn.parameters()),
             lr=lr
         )
-
         self.MseLoss = nn.MSELoss()  # 均方误差损失函数
 
     def forward(self, graph):
         """
         前向传播计算动作概率和状态价值
-
         参数:
             graph: 异构图状态
-
         返回:
             action_probs: 动作概率分布
             state_value: 状态价值估计
@@ -111,10 +104,8 @@ class PPO(nn.Module):
     def select_action(self, graph):
         """
         根据当前状态选择动作，并记录相关信息
-
         参数:
             graph: 异构图状态
-
         返回:
             action.item(): 选择的动作索引
             dist.log_prob(action): 动作的对数概率
@@ -126,14 +117,12 @@ class PPO(nn.Module):
         dist = Categorical(action_probs)
         # 从分布中采样动作
         action = dist.sample()
-
         # 记录动作、对数概率和状态价值
         return action.item(), dist.log_prob(action), state_value.item()
 
     def update(self, memory):
         """
         使用存储的经验数据更新策略
-
         参数:
             memory: 存储经验数据的Memory对象
         """
@@ -164,7 +153,6 @@ class PPO(nn.Module):
         for _ in range(self.K_epochs):
             logprobs = []
             state_values = []
-
             # 对每个存储的状态重新计算动作概率和状态价值
             for state in old_states:
                 action_probs, state_val = self.forward(state)
