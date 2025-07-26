@@ -5,6 +5,7 @@ from torch.distributions import Categorical
 
 class Memory:
     """存储智能体与环境交互的经验数据"""
+
     def __init__(self):
         self.states = []  # 存储异构图状态
         self.actions = []  # 存储选择的动作
@@ -25,6 +26,7 @@ class Memory:
 
 class PPO(nn.Module):
     """近端策略优化算法的实现"""
+
     def __init__(self, hgnn, action_dim, lr, gamma, eps_clip, K_epochs, device):
         """
         初始化PPO模型
@@ -44,6 +46,7 @@ class PPO(nn.Module):
         self.eps_clip = eps_clip
         self.K_epochs = K_epochs
         self.device = device
+        self.MseLoss = nn.MSELoss()  # 将 MseLoss 移到 __init__ 中，更规范
 
         # 策略网络：将HGNN提取的特征映射到动作概率分布
         self.policy = nn.Sequential(
@@ -82,7 +85,6 @@ class PPO(nn.Module):
             list(self.hgnn.parameters()),
             lr=lr
         )
-        self.MseLoss = nn.MSELoss()  # 均方误差损失函数
 
     def forward(self, graph):
         """
@@ -125,6 +127,8 @@ class PPO(nn.Module):
         使用存储的经验数据更新策略
         参数:
             memory: 存储经验数据的Memory对象
+        返回: # --- 修改：返回平均损失 ---
+            avg_policy_loss.item(), avg_value_loss.item(): 本轮更新的平均策略损失和价值损失
         """
         # 修复：将zip对象转换为列表后再反转（解决'zip' object is not reversible错误）
         rewards = []
@@ -149,6 +153,11 @@ class PPO(nn.Module):
         # 计算优势函数：实际奖励与估计价值的差异
         advantages = rewards - old_state_values.detach()
 
+        # --- 新增：用于存储每轮的损失 ---
+        policy_losses = []
+        value_losses = []
+        # -----------------------------
+
         # 多次迭代更新策略，提高样本效率
         for _ in range(self.K_epochs):
             logprobs = []
@@ -171,9 +180,11 @@ class PPO(nn.Module):
             surr1 = ratios * advantages
             surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
             policy_loss = -torch.min(surr1, surr2).mean()  # 取负号因为要最大化
+            policy_losses.append(policy_loss)  # 记录策略损失 (保持为张量)
 
             # 计算价值损失
             value_loss = 0.5 * self.MseLoss(state_values, rewards)
+            value_losses.append(value_loss)  # 记录价值损失 (保持为张量)
 
             # 总损失
             loss = policy_loss + value_loss
@@ -185,3 +196,14 @@ class PPO(nn.Module):
 
         # 更新旧策略网络，使其与当前策略一致
         self.policy_old.load_state_dict(self.policy.state_dict())
+
+        # --- 新增：清空内存 ---
+        memory.clear_memory()
+        # -----------------------
+
+        # --- 新增：计算并返回平均损失 ---
+        # 使用 torch.stack 确保正确计算平均值
+        avg_policy_loss = torch.stack(policy_losses).mean()
+        avg_value_loss = torch.stack(value_losses).mean()
+        return avg_policy_loss.item(), avg_value_loss.item()  # 返回标量值
+        # ---------------------------------
