@@ -5,10 +5,10 @@ import torch
 import numpy as np
 from tqdm import tqdm  # 用于显示训练进度条
 from torch.utils.tensorboard import SummaryWriter
-from env.usv_env import USVSchedulingEnv  # 导入环境类
+from env.usv_env import USVSchedulingEnv  # 导入修改后的环境类
 from env.state_representation import build_heterogeneous_graph, calculate_usv_task_distances
 from graph.hgnn import USVHeteroGNN
-from PPO_model import PPO, Memory
+from PPO_model import PPO, Memory # 示例：如果使用 PPO_model.py 中的 PPO 类
 import visdom
 import utils.data_generator as data_generator
 import matplotlib.pyplot as plt
@@ -26,20 +26,12 @@ instances = data_generator.generate_batch_instances(
     fixed_usvs=num_usvs
 )
 file_path = "data/fixed_instances.pkl"
+# 确保 data 目录存在
+os.makedirs(os.path.dirname(file_path), exist_ok=True)
 data_generator.save_instances_to_file(instances, file_path)
 
 # 初始化环境（使用固定数量的任务和USV）
 env = USVSchedulingEnv(num_usvs=num_usvs, num_tasks=num_tasks)
-
-# 在每个周期读取算例
-instance_index = 0
-for episode in tqdm(range(100), desc="读取算例进度", unit="episode"):
-    # 读取算例（任务数量已固定为num_tasks）
-    tasks, usvs = instances[instance_index % num_instances]
-    instance_index += 1
-    # 重置环境（此时任务数量与环境匹配）
-    env.reset_with_instances(tasks, usvs)
-
 
 def setup_seed(seed):
     """设置随机种子确保结果可复现"""
@@ -48,7 +40,6 @@ def setup_seed(seed):
     np.random.seed(seed)
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
-
 
 def get_next_model_number(model_dir):
     """获取下一个可用的模型编号"""
@@ -64,28 +55,110 @@ def get_next_model_number(model_dir):
         return max(numbers) + 1
     return 0
 
-
 def generate_gantt_chart(env):
-    fig, ax = plt.subplots()
+    """
+    生成并显示甘特图，为每个调度的任务添加任务编号标识。
+    修复：处理 processing_time 可能是数组的情况。
+    """
+    if not env.scheduled_tasks:
+        print("警告：没有已调度的任务，无法生成甘特图。")
+        return
+
+    fig, ax = plt.subplots(figsize=(12, 6)) # 增加图形尺寸以获得更好可读性
     usv_tasks = {i: [] for i in range(env.num_usvs)}
+
+    # 将任务按USV分组
     for task_idx in env.scheduled_tasks:
-        usv_idx = task_idx % env.num_usvs
-        usv_tasks[usv_idx].append(task_idx)
+        # --- 修改：优先使用 env.task_assignment ---
+        if hasattr(env, 'task_assignment') and env.task_assignment is not None:
+             if task_idx < len(env.task_assignment) and env.task_assignment[task_idx] is not None and env.task_assignment[task_idx] != -1:
+                 usv_idx = env.task_assignment[task_idx]
+             else:
+                 print(f"Warning: Task {task_idx} assignment not found or invalid, skipping in Gantt chart.")
+                 continue
+        else:
+            print("Warning: Direct task-to-USV mapping not found in env. Using modulo method (might be inaccurate).")
+            usv_idx = task_idx % env.num_usvs
+
+        if 0 <= usv_idx < env.num_usvs:
+            usv_tasks[usv_idx].append(task_idx)
+        else:
+            print(f"Warning: Task {task_idx} assigned to invalid USV index {usv_idx}, skipping.")
+
+    # 对每个 USV 上的任务按开始时间排序
+    for usv_idx in usv_tasks:
+        sorted_tasks = []
+        for tid in usv_tasks[usv_idx]:
+            if tid < len(env.makespan_batch) and tid < len(env.tasks['processing_time']):
+                end_time = env.makespan_batch[tid]
+
+                # --- 修复关键点 ---
+                # 安全地获取处理时间（使用平均值作为近似）
+                proc_time_data = env.tasks['processing_time'][tid]
+                if isinstance(proc_time_data, (list, tuple, np.ndarray)):
+                    if len(proc_time_data) >= 2:
+                        processing_time = proc_time_data[1] # 取 t2 (按时完成时间)
+                    else:
+                        processing_time = np.mean(proc_time_data) # Fallback
+                else:
+                    processing_time = proc_time_data
+
+                start_time = end_time - processing_time
+                sorted_tasks.append((tid, start_time))
+            else:
+                 print(f"Warning: Task {tid} data missing, skipping in sort.")
+
+        # 根据计算出的开始时间排序
+        sorted_tasks.sort(key=lambda x: x[1])
+        # 只保留任务ID
+        usv_tasks[usv_idx] = [tid for tid, _ in sorted_tasks]
+
+    # 绘制每个任务的条形图并添加任务编号
+    y_labels = [] # 存储Y轴标签
     for usv_idx, tasks in usv_tasks.items():
-        for task_idx in tasks:
-            start_time = env.makespan_batch[task_idx] - np.mean(env.tasks['processing_time'][task_idx])
-            end_time = env.makespan_batch[task_idx]
-            ax.barh(usv_idx, end_time - start_time, left=start_time)
+        y_labels.append(f'USV {usv_idx}')
+        for i, task_idx in enumerate(tasks):
+            if task_idx < len(env.makespan_batch) and task_idx < len(env.tasks['processing_time']):
+                # --- 再次安全地获取处理时间用于绘图 ---
+                proc_time_data = env.tasks['processing_time'][task_idx]
+                if isinstance(proc_time_data, (list, tuple, np.ndarray)):
+                    if len(proc_time_data) >= 2:
+                        processing_time = proc_time_data[1] # 与排序时保持一致
+                    else:
+                        processing_time = np.mean(proc_time_data)
+                else:
+                    processing_time = proc_time_data
+
+                end_time = env.makespan_batch[task_idx]
+                start_time = end_time - processing_time
+
+                # 绘制条形图
+                bar = ax.barh(usv_idx, processing_time, left=start_time, height=0.5, label=f'Task {task_idx}' if i == 0 else "")
+                # 在条形图中心添加任务编号文本
+                ax.text(start_time + processing_time/2, usv_idx, f'{task_idx}',
+                        ha='center', va='center', fontsize=8, color='white')
+            else:
+                 print(f"Warning: Task {task_idx} data missing in env.makespan_batch or env.tasks['processing_time'].")
+
+    # 设置图表属性
+    ax.set_yticks(range(env.num_usvs))
+    ax.set_yticklabels(y_labels)
     ax.set_xlabel('Time')
     ax.set_ylabel('USV')
-    ax.set_title('Gantt Chart')
-    plt.show()
+    ax.set_title('Gantt Chart of USV Task Scheduling')
+    ax.grid(True, axis='x', linestyle='--', alpha=0.6) # 添加网格线
+    fig.tight_layout() # 调整布局
 
+    # --- 修改：显示并保存甘特图 ---
+    plt.show()
+    # 可选：保存图片到文件
+    # plt.savefig("gantt_chart_final.png")
+    print("甘特图已生成并显示。")
+    # -----------------------------
 
 def main():
     # 设置随机种子
     setup_seed(42)
-
     # 设备配置
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device} | {'GPU加速已启用' if device.type == 'cuda' else '使用CPU'}")
@@ -94,7 +167,7 @@ def main():
     hidden_dim = 32  # 隐藏层维度
     n_heads = 4  # GAT注意力头数
     num_layers = 2  # HGNN层数
-    max_episodes = 100  # 最大训练回合数
+    max_episodes = 500  # 最大训练回合数
     max_steps = num_tasks * 2  # 每回合最大步数
     lr = 3e-4  # 学习率
     gamma = 0.99  # 折扣因子
@@ -106,23 +179,19 @@ def main():
     # 创建模型保存目录
     model_dir = "model"
     os.makedirs(model_dir, exist_ok=True)
-
     # 获取下一个可用的模型编号
     next_model_number = get_next_model_number(model_dir)
 
-    # 初始化HGNN模型
-    state = env.reset()  # 获取初始状态
+    # --- 修改：实例索引 ---
+    instance_index = 0
+
+    # 初始化HGNN模型 (在循环外初始化一次即可)
+    state = env.reset() # 先 reset 获取初始状态以确定维度
     usv_feats = state['usv_features']  # USV特征 [num_usvs, usv_feat_dim]
     task_feats = state['task_features']  # 任务特征 [num_tasks, task_feat_dim]
-
-    # 计算USV与任务之间的距离（用于构建图）
     distances = calculate_usv_task_distances(usv_feats[:, :2], task_feats[:, :2])
-
-    # 构建异构图
     graph = build_heterogeneous_graph(usv_feats, task_feats, distances, eta=eta)
     graph = graph.to(device)
-
-    # 打印图的结构信息
     print(f"图中节点类型: {graph.ntypes}")
     print(f"图中完整边类型三元组: {graph.canonical_etypes}")
     for etype in graph.canonical_etypes:
@@ -155,16 +224,27 @@ def main():
 
     # 初始化visdom
     vis = visdom.Visdom()
-    reward_window = vis.line(
-        Y=torch.zeros((1)).cpu(),
-        X=torch.zeros((1)).cpu(),
-        opts=dict(xlabel='Episode', ylabel='Reward', title='Training Reward')
-    )
-    makespan_window = vis.line(
-        Y=torch.zeros((1)).cpu(),
-        X=torch.zeros((1)).cpu(),
-        opts=dict(xlabel='Episode', ylabel='Makespan', title='Training Makespan')
-    )
+    if not vis.check_connection():
+        print("Warning: Visdom server not connected. Plots will not be displayed.")
+        vis = None # 设置为 None 以便后续检查
+
+    reward_window = None
+    makespan_window = None
+    if vis:
+        try:
+            reward_window = vis.line(
+                Y=torch.zeros((1)).cpu(),
+                X=torch.zeros((1)).cpu(),
+                opts=dict(xlabel='Episode', ylabel='Reward', title='Training Reward')
+            )
+            makespan_window = vis.line(
+                Y=torch.zeros((1)).cpu(),
+                X=torch.zeros((1)).cpu(),
+                opts=dict(xlabel='Episode', ylabel='Makespan', title='Training Makespan')
+            )
+        except Exception as e:
+            print(f"Warning: Failed to create Visdom windows: {e}")
+            vis = None # 如果创建窗口失败，也禁用 visdom
 
     # 训练统计
     best_makespan = float('inf')
@@ -174,11 +254,17 @@ def main():
     # 主训练循环
     pbar = tqdm(range(max_episodes), desc="训练进度", unit="episode")
     for episode in pbar:
-        state = env.reset()
+        # --- 修改：在每个 episode 开始时重置环境 ---
+        tasks, usvs = instances[instance_index % num_instances]
+        instance_index += 1
+        state = env.reset_with_instances(tasks, usvs)
+        # --- 修改结束 ---
+
         memory = Memory()
         done = False
         total_reward = 0
         steps = 0
+        episode_makespan = 0 # 用于记录最终的 makespan
 
         while not done and steps < max_steps:
             # 构建异构图状态
@@ -191,14 +277,26 @@ def main():
             # 选择动作
             action, log_prob, state_value = ppo.select_action(graph)
 
-            # 执行动作
-            next_state, reward, done, _ = env.step(action)
+            # --- 修改：执行动作并接收 info ---
+            next_state, reward, done, info = env.step(action)
+            # --- 修改：使用 info 中的最终 makespan ---
+            if done and 'final_makespan' in info:
+                episode_makespan = info['final_makespan']
+                # --- 修改：在 episode 结束时给予稀疏奖励 ---
+                # 奖励与 makespan 成反比，系数可调 (这里是示例)
+                sparse_reward = -episode_makespan * 0.1 # 系数可以根据训练效果调整
+                reward += sparse_reward
+                # print(f"Episode {episode} finished. Sparse reward: {sparse_reward}, Total step reward: {reward - sparse_reward}")
+            elif not done:
+                 # 如果未完成，使用当前最大已调度任务完成时间作为近似 (用于早停和日志)
+                 episode_makespan = info.get("makespan", episode_makespan)
+            # --- 修改结束 ---
 
             # 存储经验
             memory.states.append(graph)
             memory.actions.append(action)
             memory.logprobs.append(log_prob)
-            memory.rewards.append(reward)
+            memory.rewards.append(reward) # 使用可能被修改后的 reward
             memory.is_terminals.append(done)
             memory.state_values.append(state_value)
 
@@ -210,8 +308,9 @@ def main():
         # 更新PPO策略
         ppo.update(memory)
 
-        # 计算性能指标
-        makespan = env.makespan_batch[env.scheduled_tasks].mean() if env.scheduled_tasks else float('inf')
+        # --- 修改：使用 episode_makespan 作为性能指标 ---
+        makespan = episode_makespan if episode_makespan > 0 else float('inf')
+        # --- 修改结束 ---
 
         # 早停检查与模型保存
         if makespan < best_makespan:
@@ -233,18 +332,23 @@ def main():
         writer.add_scalar("Steps/Episode", steps, episode)
 
         # 更新可视化
-        vis.line(
-            Y=torch.tensor([total_reward]).cpu(),
-            X=torch.tensor([episode]).cpu(),
-            win=reward_window,
-            update='append'
-        )
-        vis.line(
-            Y=torch.tensor([makespan]).cpu(),
-            X=torch.tensor([episode]).cpu(),
-            win=makespan_window,
-            update='append'
-        )
+        if vis and reward_window is not None and makespan_window is not None:
+            try:
+                vis.line(
+                    Y=torch.tensor([total_reward]).cpu(),
+                    X=torch.tensor([episode]).cpu(),
+                    win=reward_window,
+                    update='append'
+                )
+                vis.line(
+                    Y=torch.tensor([makespan]).cpu(),
+                    X=torch.tensor([episode]).cpu(),
+                    win=makespan_window,
+                    update='append'
+                )
+            except Exception as e:
+                print(f"Warning: Failed to update Visdom plots: {e}")
+                # 可以选择禁用 visdom 或继续尝试
 
         # 更新进度条
         pbar.set_postfix({
@@ -258,8 +362,13 @@ def main():
     writer.close()
     print(f"训练完成！最佳完成时间: {best_makespan:.4f}")
     print(f"模型已保存至: {model_path}")
-    generate_gantt_chart(env)
 
+    # --- 修改：在训练结束后生成甘特图 ---
+    try:
+        generate_gantt_chart(env) # 生成最终调度结果的甘特图
+    except Exception as e:
+        print(f"生成甘特图时出错: {e}")
+    # ------------------------------------
 
 if __name__ == "__main__":
     main()
