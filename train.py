@@ -5,10 +5,10 @@ import torch
 import numpy as np
 from tqdm import tqdm  # 用于显示训练进度条
 from torch.utils.tensorboard import SummaryWriter
-from env.usv_env import USVSchedulingEnv  # 导入修改后的环境类
+from env.usv_env import USVSchedulingEnv
 from env.state_representation import build_heterogeneous_graph, calculate_usv_task_distances
 from graph.hgnn import USVHeteroGNN
-from PPO_model import PPO, Memory # 示例：如果使用 PPO_model.py 中的 PPO 类
+from PPO_model import PPO, Memory
 import visdom
 import utils.data_generator as data_generator
 import matplotlib.pyplot as plt
@@ -167,13 +167,13 @@ def main():
     hidden_dim = 32  # 隐藏层维度
     n_heads = 4  # GAT注意力头数
     num_layers = 2  # HGNN层数
-    max_episodes = 500  # 最大训练回合数
+    max_episodes = 800  # 最大训练回合数
     max_steps = num_tasks * 2  # 每回合最大步数
     lr = 3e-4  # 学习率
-    gamma = 0.99  # 折扣因子
+    gamma = 1  # 折扣因子
     eps_clip = 0.2  # PPO裁剪参数
     K_epochs = 5  # 每次更新的训练轮数
-    early_stop_patience = 100  # 早停耐心值
+    early_stop_patience = 800  # 早停耐心值
     eta = 2  # 构建图时考虑的最近邻数量
 
     # 创建模型保存目录
@@ -284,7 +284,7 @@ def main():
                 episode_makespan = info['final_makespan']
                 # --- 修改：在 episode 结束时给予稀疏奖励 ---
                 # 奖励与 makespan 成反比，系数可调 (这里是示例)
-                sparse_reward = -episode_makespan * 0.1 # 系数可以根据训练效果调整
+                sparse_reward = -episode_makespan * 0.2 # 增加稀疏奖励的权重
                 reward += sparse_reward
                 # print(f"Episode {episode} finished. Sparse reward: {sparse_reward}, Total step reward: {reward - sparse_reward}")
             elif not done:
