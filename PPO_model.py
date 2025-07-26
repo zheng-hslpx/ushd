@@ -5,7 +5,6 @@ from torch.distributions import Categorical
 
 class Memory:
     """存储智能体与环境交互的经验数据"""
-
     def __init__(self):
         self.states = []  # 存储异构图状态
         self.actions = []  # 存储选择的动作
@@ -26,7 +25,6 @@ class Memory:
 
 class PPO(nn.Module):
     """近端策略优化算法的实现"""
-
     def __init__(self, hgnn, action_dim, lr, gamma, eps_clip, K_epochs, device):
         """
         初始化PPO模型
@@ -46,7 +44,7 @@ class PPO(nn.Module):
         self.eps_clip = eps_clip
         self.K_epochs = K_epochs
         self.device = device
-        self.MseLoss = nn.MSELoss()  # 将 MseLoss 移到 __init__ 中，更规范
+        self.MseLoss = nn.MSELoss() # 将 MseLoss 移到 __init__ 中，更规范
 
         # 策略网络：将HGNN提取的特征映射到动作概率分布
         self.policy = nn.Sequential(
@@ -127,7 +125,7 @@ class PPO(nn.Module):
         使用存储的经验数据更新策略
         参数:
             memory: 存储经验数据的Memory对象
-        返回: # --- 修改：返回平均损失 ---
+        返回:
             avg_policy_loss.item(), avg_value_loss.item(): 本轮更新的平均策略损失和价值损失
         """
         # 修复：将zip对象转换为列表后再反转（解决'zip' object is not reversible错误）
@@ -180,11 +178,11 @@ class PPO(nn.Module):
             surr1 = ratios * advantages
             surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
             policy_loss = -torch.min(surr1, surr2).mean()  # 取负号因为要最大化
-            policy_losses.append(policy_loss)  # 记录策略损失 (保持为张量)
+            policy_losses.append(policy_loss) # 记录策略损失
 
             # 计算价值损失
             value_loss = 0.5 * self.MseLoss(state_values, rewards)
-            value_losses.append(value_loss)  # 记录价值损失 (保持为张量)
+            value_losses.append(value_loss) # 记录价值损失
 
             # 总损失
             loss = policy_loss + value_loss
@@ -202,8 +200,7 @@ class PPO(nn.Module):
         # -----------------------
 
         # --- 新增：计算并返回平均损失 ---
-        # 使用 torch.stack 确保正确计算平均值
         avg_policy_loss = torch.stack(policy_losses).mean()
         avg_value_loss = torch.stack(value_losses).mean()
-        return avg_policy_loss.item(), avg_value_loss.item()  # 返回标量值
+        return avg_policy_loss.item(), avg_value_loss.item() # 返回标量值
         # ---------------------------------
