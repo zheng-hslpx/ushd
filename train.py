@@ -5,7 +5,7 @@ import torch
 import numpy as np
 from tqdm import tqdm  # 用于显示训练进度条
 from torch.utils.tensorboard import SummaryWriter
-from env.usv_env import USVSchedulingEnv
+from env.usv_env import USVSchedulingEnv  # 导入修改后的环境类
 from env.state_representation import build_heterogeneous_graph, calculate_usv_task_distances
 from graph.hgnn import USVHeteroGNN
 from PPO_model import PPO, Memory
@@ -230,6 +230,11 @@ def main():
 
     reward_window = None
     makespan_window = None
+    # --- 新增：为 Policy Loss 和 Value Loss 创建 Visdom 窗口 ---
+    policy_loss_window = None
+    value_loss_window = None
+    # ---------------------------------------------------------------
+
     if vis:
         try:
             reward_window = vis.line(
@@ -242,6 +247,18 @@ def main():
                 X=torch.zeros((1)).cpu(),
                 opts=dict(xlabel='Episode', ylabel='Makespan', title='Training Makespan')
             )
+            # --- 新增：创建 Policy Loss 和 Value Loss 的 Visdom 窗口 ---
+            policy_loss_window = vis.line(
+                Y=torch.zeros((1)).cpu(),
+                X=torch.zeros((1)).cpu(),
+                opts=dict(xlabel='Episode', ylabel='Loss', title='Policy Loss')
+            )
+            value_loss_window = vis.line(
+                Y=torch.zeros((1)).cpu(),
+                X=torch.zeros((1)).cpu(),
+                opts=dict(xlabel='Episode', ylabel='Loss', title='Value Loss')
+            )
+            # ---------------------------------------------------------------
         except Exception as e:
             print(f"Warning: Failed to create Visdom windows: {e}")
             vis = None # 如果创建窗口失败，也禁用 visdom
@@ -305,8 +322,10 @@ def main():
             total_reward += reward
             steps += 1
 
-        # 更新PPO策略
-        ppo.update(memory)
+        # --- 修改：更新PPO策略并获取损失 ---
+        # ppo.update(memory) # 原来的调用
+        policy_loss_avg, value_loss_avg = ppo.update(memory) # 修改后的调用，接收损失
+        # --- 修改结束 ---
 
         # --- 修改：使用 episode_makespan 作为性能指标 ---
         makespan = episode_makespan if episode_makespan > 0 else float('inf')
@@ -330,6 +349,10 @@ def main():
         writer.add_scalar("Reward/Episode", total_reward, episode)
         writer.add_scalar("Makespan/Episode", makespan, episode)
         writer.add_scalar("Steps/Episode", steps, episode)
+        # --- 新增：记录损失到 TensorBoard ---
+        writer.add_scalar("Policy_Loss/Episode", policy_loss_avg, episode)
+        writer.add_scalar("Value_Loss/Episode", value_loss_avg, episode)
+        # -------------------------------------
 
         # 更新可视化
         if vis and reward_window is not None and makespan_window is not None:
@@ -346,6 +369,22 @@ def main():
                     win=makespan_window,
                     update='append'
                 )
+                # --- 新增：更新 Policy Loss 和 Value Loss 的 Visdom 曲线 ---
+                vis.line(
+                    Y=torch.tensor([policy_loss_avg]).cpu(), # 使用返回的平均损失
+                    X=torch.tensor([episode]).cpu(),
+                    win=policy_loss_window,
+                    update='append',
+                    name='Policy Loss' # 可选：为曲线命名
+                )
+                vis.line(
+                    Y=torch.tensor([value_loss_avg]).cpu(), # 使用返回的平均损失
+                    X=torch.tensor([episode]).cpu(),
+                    win=value_loss_window,
+                    update='append',
+                    name='Value Loss' # 可选：为曲线命名
+                )
+                # ----------------------------------------------------------------
             except Exception as e:
                 print(f"Warning: Failed to update Visdom plots: {e}")
                 # 可以选择禁用 visdom 或继续尝试
