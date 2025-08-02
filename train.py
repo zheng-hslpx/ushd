@@ -12,6 +12,9 @@ from PPO_model import PPO, Memory
 import visdom
 import utils.data_generator as data_generator
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors
+import matplotlib.ticker as ticker
 
 # 超参数：固定任务和USV数量（核心：与环境保持一致）
 num_usvs = 3  # USV数量
@@ -53,94 +56,132 @@ def get_next_model_number(model_dir):
         return max(numbers) + 1
     return 0
 
+# --- 修改：generate_gantt_chart 函数 ---
 def generate_gantt_chart(env):
     """
     生成并显示甘特图，为每个调度的任务添加任务编号标识。
-    修复：处理 processing_time 可能是数组的情况。
+    修改：
+    1. 为每个任务分配唯一颜色（至少300种）。
+    2. 细化 X 轴刻度间隔。
+    3. 添加航行时间条（灰色）并标注 "Navigation"。
+    4. 确保每个 USV 的任务是独立绘制的。
+    5. 增强容错机制。
     """
     if not env.scheduled_tasks:
         print("警告：没有已调度的任务，无法生成甘特图。")
         return
-    fig, ax = plt.subplots(figsize=(12, 6)) # 增加图形尺寸以获得更好可读性
-    usv_tasks = {i: [] for i in range(env.num_usvs)}
-    # 将任务按USV分组
+
+    fig, ax = plt.subplots(figsize=(15, 8)) # 增加图形尺寸
+
+    # --- 修改 1：生成唯一颜色 ---
+    # 生成至少 num_tasks 个唯一颜色，上限为 300
+    num_colors_needed = max(env.num_tasks, 300)
+    # 使用 HSV 色彩空间生成区分度高的颜色
+    hues = np.linspace(0, 1, num_colors_needed, endpoint=False)
+    colors_list = [mcolors.hsv_to_rgb((h, 0.9, 0.8)) for h in hues]
+    # --- 修改结束 ---
+
+    # 用于存储每个 USV 的任务及其时间信息
+    usv_task_data = {i: [] for i in range(env.num_usvs)}
+
+    # --- 修改 4 & 5：收集任务数据，确保独立绘制，并增强容错 ---
+    # 使用 env.task_schedule_details 来获取精确的时间信息
+    if not hasattr(env, 'task_schedule_details') or not env.task_schedule_details:
+        print("警告：环境未存储任务调度详情 (task_schedule_details) 或其为空，甘特图将不包含航行时间。")
+        return # 如果没有存储或为空，则不生成甘特图
+
+    # 填充 usv_task_data
     for task_idx in env.scheduled_tasks:
-        # --- 修改：优先使用 env.task_assignment ---
-        if hasattr(env, 'task_assignment') and env.task_assignment is not None:
-             if task_idx < len(env.task_assignment) and env.task_assignment[task_idx] is not None and env.task_assignment[task_idx] != -1:
-                 usv_idx = env.task_assignment[task_idx]
-             else:
-                 print(f"Warning: Task {task_idx} assignment not found or invalid, skipping in Gantt chart.")
-                 continue
+        if task_idx in env.task_schedule_details:
+            details = env.task_schedule_details[task_idx]
+            try:
+                # 确保 task_idx 存在
+                task_idx = details['task_idx']
+                usv_idx = details['usv_idx']
+                usv_task_data[usv_idx].append(details)
+            except KeyError as e:
+                print(f"Warning: Task {task_idx} details missing key {e}, skipping in Gantt chart.")
         else:
-            print("Warning: Direct task-to-USV mapping not found in env. Using modulo method (might be inaccurate).")
-            usv_idx = task_idx % env.num_usvs
-        if 0 <= usv_idx < env.num_usvs:
-            usv_tasks[usv_idx].append(task_idx)
+             print(f"Warning: Task {task_idx} details not found in env.task_schedule_details, skipping in Gantt chart.")
+
+    # 对每个 USV 上的任务按处理开始时间排序
+    for usv_idx in usv_task_data:
+        if usv_task_data[usv_idx]: # 增强容错：检查列表是否为空
+            usv_task_data[usv_idx].sort(key=lambda x: x['processing_start_time'])
         else:
-            print(f"Warning: Task {task_idx} assigned to invalid USV index {usv_idx}, skipping.")
-    # 对每个 USV 上的任务按开始时间排序
-    for usv_idx in usv_tasks:
-        sorted_tasks = []
-        for tid in usv_tasks[usv_idx]:
-            if tid < len(env.makespan_batch) and tid < len(env.tasks['processing_time']):
-                end_time = env.makespan_batch[tid]
-                # --- 修复关键点 ---
-                # 安全地获取处理时间（使用平均值作为近似）
-                proc_time_data = env.tasks['processing_time'][tid]
-                if isinstance(proc_time_data, (list, tuple, np.ndarray)):
-                    if len(proc_time_data) >= 2:
-                        processing_time = proc_time_data[1] # 取 t2 (按时完成时间)
-                    else:
-                        processing_time = np.mean(proc_time_data) # Fallback
-                else:
-                    processing_time = proc_time_data
-                start_time = end_time - processing_time
-                sorted_tasks.append((tid, start_time))
-            else:
-                 print(f"Warning: Task {tid} data missing, skipping in sort.")
-        # 根据计算出的开始时间排序
-        sorted_tasks.sort(key=lambda x: x[1])
-        # 只保留任务ID
-        usv_tasks[usv_idx] = [tid for tid, _ in sorted_tasks]
-    # 绘制每个任务的条形图并添加任务编号
-    y_labels = [] # 存储Y轴标签
-    for usv_idx, tasks in usv_tasks.items():
+            print(f"Warning: No tasks found for USV {usv_idx}, skipping sorting.")
+
+    # 绘制每个任务的条形图
+    y_labels = []
+    y_positions = []
+    y_spacing = 1.5 # USV 之间的垂直间距
+    bar_height = 0.4 # 条形图高度
+
+    for usv_idx, tasks_data in usv_task_data.items():
+        y_pos = usv_idx * y_spacing
         y_labels.append(f'USV {usv_idx}')
-        for i, task_idx in enumerate(tasks):
-            if task_idx < len(env.makespan_batch) and task_idx < len(env.tasks['processing_time']):
-                # --- 再次安全地获取处理时间用于绘图 ---
-                proc_time_data = env.tasks['processing_time'][task_idx]
-                if isinstance(proc_time_data, (list, tuple, np.ndarray)):
-                    if len(proc_time_data) >= 2:
-                        processing_time = proc_time_data[1] # 与排序时保持一致
-                    else:
-                        processing_time = np.mean(proc_time_data)
-                else:
-                    processing_time = proc_time_data
-                end_time = env.makespan_batch[task_idx]
-                start_time = end_time - processing_time
-                # 绘制条形图
-                bar = ax.barh(usv_idx, processing_time, left=start_time, height=0.5, label=f'Task {task_idx}' if i == 0 else "")
-                # 在条形图中心添加任务编号文本
-                ax.text(start_time + processing_time/2, usv_idx, f'{task_idx}',
+        y_positions.append(y_pos)
+
+        # 增强容错：检查 tasks_data 是否为空
+        if not tasks_data:
+            print(f"Warning: No task data to plot for USV {usv_idx}.")
+            continue
+
+        for task_data in tasks_data:
+            try:
+                task_idx = task_data['task_idx']  # 确保 task_idx 存在
+                processing_start_time = task_data['processing_start_time']
+                processing_time = task_data['processing_time']
+                travel_start_time = task_data['travel_start_time']
+                travel_time = task_data['travel_time']
+
+                # --- 修改 3：绘制航行时间条 ---
+                if travel_time > 0:
+                    ax.barh(y_pos, travel_time, left=travel_start_time, height=bar_height, color='gray', label='Navigation' if usv_idx == 0 and task_idx == usv_task_data[usv_idx][0]['task_idx'] else "")
+                # --- 绘制处理时间条 ---
+                ax.barh(y_pos, processing_time, left=processing_start_time, height=bar_height, color=colors_list[task_idx])
+                # --- 在处理时间条中心添加任务编号 ---
+                ax.text(processing_start_time + processing_time/2, y_pos, f'{task_idx}',
                         ha='center', va='center', fontsize=8, color='white')
-            else:
-                 print(f"Warning: Task {task_idx} data missing in env.makespan_batch or env.tasks['processing_time'].")
-    # 设置图表属性
-    ax.set_yticks(range(env.num_usvs))
+            except KeyError as e:
+                print(f"Error plotting task for USV {usv_idx}: Missing key {e} in task_data {task_data}")
+            except Exception as e:
+                print(f"Unexpected error plotting task for USV {usv_idx}: {e}")
+    # --- 修改结束 ---
+
+    # --- 修改 2：细化 X 轴刻度 ---
+    # 设置主刻度定位器
+    x_range = ax.get_xlim()[1] - ax.get_xlim()[0]
+    if x_range > 0:
+        major_tick_interval = max(1, int(x_range / 20)) # 大约20个主刻度
+        ax.xaxis.set_major_locator(ticker.MultipleLocator(base=major_tick_interval))
+        # 设置主刻度标签格式和旋转
+        plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+        # 添加 minor ticks
+        ax.xaxis.set_minor_locator(ticker.AutoMinorLocator())
+        ax.grid(True, which='major', axis='x', linestyle='-', alpha=0.5)
+        ax.grid(True, which='minor', axis='x', linestyle='--', alpha=0.3)
+    # --- 修改结束 ---
+
+    # 设置 Y 轴
+    ax.set_yticks(y_positions)
     ax.set_yticklabels(y_labels)
     ax.set_xlabel('Time')
     ax.set_ylabel('USV')
     ax.set_title('Gantt Chart of USV Task Scheduling')
-    ax.grid(True, axis='x', linestyle='--', alpha=0.6) # 添加网格线
-    fig.tight_layout() # 调整布局
-    # --- 修改：显示并保存甘特图 ---
+
+    # --- 修改 3：添加 "Navigation" 图例 ---
+    handles, labels = ax.get_legend_handles_labels()
+    if 'Navigation' in labels:
+        from matplotlib.patches import Patch
+        legend_elements = [Patch(facecolor='gray', label='Navigation')]
+        ax.legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(1.15, 1))
+    # --- 修改结束 ---
+
+    fig.tight_layout()
     plt.show()
-    # 可选：保存图片到文件
-    # plt.savefig("gantt_chart_final.png")
     print("甘特图已生成并显示。")
-    # -----------------------------
+# --- 修改结束 ---
 
 def main():
     # 设置随机种子
@@ -215,28 +256,47 @@ def main():
     # ---------------------------------------------------------------
     if vis:
         try:
+            # --- 修改：细化 Y 轴范围和刻度 ---
             reward_window = vis.line(
                 Y=torch.zeros((1)).cpu(),
                 X=torch.zeros((1)).cpu(),
-                opts=dict(xlabel='Episode', ylabel='Reward', title='Training Reward')
+                opts=dict(
+                    xlabel='Episode',
+                    ylabel='Reward',
+                    title='Training Reward',
+                    ylim=[-3200, 0],
+                    ytickmarks=list(range(-3200, 0, 50))
+                )
             )
             makespan_window = vis.line(
                 Y=torch.zeros((1)).cpu(),
                 X=torch.zeros((1)).cpu(),
-                opts=dict(xlabel='Episode', ylabel='Makespan', title='Training Makespan')
+                opts=dict(
+                    xlabel='Episode',
+                    ylabel='Makespan',
+                    title='Training Makespan'
+                )
             )
-            # --- 新增：创建 Policy Loss 和 Value Loss 的 Visdom 窗口 ---
+            # --- 新增：创建 Policy Loss 和 Value Loss 的 Visdom 窗口，细化 Y 轴范围和刻度 ---
             policy_loss_window = vis.line(
                 Y=torch.zeros((1)).cpu(),
                 X=torch.zeros((1)).cpu(),
-                opts=dict(xlabel='Episode', ylabel='Loss', title='Policy Loss')
+                opts=dict(
+                    xlabel='Episode',
+                    ylabel='Loss',
+                    title='Policy Loss'
+                )
             )
             value_loss_window = vis.line(
                 Y=torch.zeros((1)).cpu(),
                 X=torch.zeros((1)).cpu(),
-                opts=dict(xlabel='Episode', ylabel='Loss', title='Value Loss')
+                opts=dict(
+                    xlabel='Episode',
+                    ylabel='Loss',
+                    title='Value Loss'
+                )
             )
-            # ---------------------------------------------------------------
+            # ----------------------------------------------------------------
         except Exception as e:
             print(f"Warning: Failed to create Visdom windows: {e}")
             vis = None # 如果创建窗口失败，也禁用 visdom
@@ -323,6 +383,7 @@ def main():
         # 更新可视化
         if vis and reward_window is not None and makespan_window is not None and policy_loss_window is not None and value_loss_window is not None:
             try:
+                # --- 修改：细化 Y 轴范围和刻度 ---
                 vis.line(
                     Y=torch.tensor([total_reward]).cpu(),
                     X=torch.tensor([episode]).cpu(),
@@ -335,7 +396,7 @@ def main():
                     win=makespan_window,
                     update='append'
                 )
-                # --- 新增：更新 Policy Loss 和 Value Loss 的 Visdom 曲线 ---
+                # --- 新增：更新 Policy Loss 和 Value Loss 的 Visdom 曲线，细化 Y 轴范围和刻度 ---
                 vis.line(
                     Y=torch.tensor([policy_loss_avg]).cpu(), # 使用返回的平均损失
                     X=torch.tensor([episode]).cpu(),
