@@ -4,7 +4,7 @@ import pickle
 
 
 def generate_task_instance(num_tasks, num_usvs, area_size_x=(0, 500), area_size_y=(0, 500),
-                           processing_time_range=(20, 60), battery_capacity=100, speed_range=(1, 3), charge_time=5):
+                           processing_time_range=(45, 90), battery_capacity=100, speed_range=(1, 3), charge_time=5):
     """生成固定数量的任务和USV初始状态"""
     # 生成固定数量的任务坐标和处理时间（三角模糊时间）
     tasks = {
@@ -27,7 +27,7 @@ def generate_task_instance(num_tasks, num_usvs, area_size_x=(0, 500), area_size_
 
 
 def generate_batch_instances(num_instances, fixed_tasks=30, fixed_usvs=3, area_size_x=(0, 500), area_size_y=(0, 500),
-                             processing_time_range=(5, 15), battery_capacity=100, speed_range=(1, 3), charge_time=5):
+                             processing_time_range=(45, 90), battery_capacity=100, speed_range=(1, 3), charge_time=5):
     """生成批量算例，任务和USV数量固定"""
     instances = []
     for _ in range(num_instances):
