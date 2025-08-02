@@ -194,13 +194,13 @@ def main():
     hidden_dim = 32  # 隐藏层维度
     n_heads = 4  # GAT注意力头数
     num_layers = 2  # HGNN层数
-    max_episodes = 2000  # 最大训练回合数
+    max_episodes = 100  # 最大训练回合数
     max_steps = num_tasks * 2  # 每回合最大步数
-    lr = 5e-5  # 学习率 (从 3e-4 降低到 1e-4)
+    lr = 3e-4  # 学习率 (从 3e-4 降低到 1e-4)
     gamma = 0.98  # 折扣因子
     eps_clip = 0.2  # PPO裁剪参数 (从 0.2 降低到 0.1)
     K_epochs = 10  # 每次更新的训练轮数
-    early_stop_patience = 2000  # 早停耐心值
+    early_stop_patience = 100  # 早停耐心值
     eta = 2  # 构建图时考虑的最近邻数量
     # ----------------------------------
     # 创建模型保存目录
@@ -240,7 +240,8 @@ def main():
         eps_clip=eps_clip,
         K_epochs=K_epochs,
         device=device
-    ).to(device)
+    ) # <-- 移除 .to(device)
+    # device 已经在 PPO 的 __init__ 方法内部被用来移动其包含的 nn.Module (ActorCritic) 到设备上
     # 初始化TensorBoard日志记录器
     writer = SummaryWriter("runs/usv_scheduling")
     # 初始化visdom
