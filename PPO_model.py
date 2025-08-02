@@ -53,41 +53,48 @@ class ActorCritic(nn.Module):
     def forward(self):
         raise NotImplementedError
 
-    def act(self, state, device): # 修正：添加 device 参数
+    # def act(self, state, device): # 旧签名
+    def act(self, state, device, action_mask=None):  # <-- 新签名，添加 action_mask 参数
         # 通过HGNN提取特征 (假设 state 是一个 DGL 图)
         # 根据修改后的 hgnn.py，self.hgnn(state) 现在返回一个 [hidden_dim] 的张量
-        graph_embedding = self.hgnn(state) # Shape: [hidden_dim]
-
+        graph_embedding = self.hgnn(state)  # Shape: [hidden_dim]
         # 确保 graph_embedding 在正确的设备上
         graph_embedding = graph_embedding.to(device)
-
         # 定义 Actor 和 Critic 网络（在首次调用时）
         # 检查是否已定义网络头
         if not hasattr(self, 'actor_head'):
-             embedding_dim = graph_embedding.shape[0] # 获取隐藏层维度
-             self.actor_head = nn.Sequential(
-                 nn.Linear(embedding_dim, 64),
-                 nn.Tanh(),
-                 nn.Linear(64, 64),
-                 nn.Tanh(),
-                 nn.Linear(64, self.action_dim) # 输出与动作空间匹配
-             ).to(device)
-             self.critic_head = nn.Sequential(
-                 nn.Linear(embedding_dim, 64),
-                 nn.Tanh(),
-                 nn.Linear(64, 64),
-                 nn.Tanh(),
-                 nn.Linear(64, 1)
-             ).to(device)
-
+            embedding_dim = graph_embedding.shape[0]  # 获取隐藏层维度
+            self.actor_head = nn.Sequential(
+                nn.Linear(embedding_dim, 64),
+                nn.Tanh(),
+                nn.Linear(64, 64),
+                nn.Tanh(),
+                nn.Linear(64, self.action_dim)  # 输出与动作空间匹配
+            ).to(device)
+            self.critic_head = nn.Sequential(
+                nn.Linear(embedding_dim, 64),
+                nn.Tanh(),
+                nn.Linear(64, 64),
+                nn.Tanh(),
+                nn.Linear(64, 1)
+            ).to(device)
         # 计算动作概率和状态价值
-        action_logits = self.actor_head(graph_embedding) # Shape: [action_dim]
+        action_logits = self.actor_head(graph_embedding)  # Shape: [action_dim]
+
+        # --- 新增：应用 Action Mask ---
+        if action_mask is not None:
+            # 将 numpy array 转换为 tensor 并移到对应设备
+            action_mask_tensor = torch.from_numpy(action_mask).to(device)
+            # 应用 mask: 将无效动作的 logits 设为一个极大的负数 (-1e8)
+            # 这样 softmax 后，无效动作的概率接近 0
+            action_logits = action_logits.masked_fill(~action_mask_tensor, -1e8)
+        # --- 新增结束 ---
+
         action_probs = torch.softmax(action_logits, dim=-1)
         dist = Categorical(action_probs)
         action = dist.sample()
         action_logprob = dist.log_prob(action)
-        state_val = self.critic_head(graph_embedding) # Shape: [1]
-
+        state_val = self.critic_head(graph_embedding)  # Shape: [1]
         return action.detach().cpu().item(), action_logprob.detach(), state_val.detach()
         # 返回标量 action (转为 CPU item)，logprob，state_val
 
@@ -159,14 +166,16 @@ class PPO:
         # --- 损失函数 ---
         self.loss_fn = nn.SmoothL1Loss() # 使用更稳定的损失函数
 
-
     def select_action(self, state):
-        # state 是一个 DGL 图
-        with torch.no_grad():
-            action, action_logprob, state_value = self.policy_old.act(state, self.device)
 
+        graph = state  # DGL 图
+        action_mask = getattr(graph, 'action_mask', None)
+
+        with torch.no_grad():
+            # 传递 action_mask 给 act 方法
+            action, action_logprob, state_value = self.policy_old.act(graph, self.device, action_mask)
         # action 已经是 cpu().item()
-        return action, action_logprob.cpu(), state_value.cpu() # 确保返回的 tensor 在 CPU 上
+        return action, action_logprob.cpu(), state_value.cpu()  # 确保返回的 tensor 在 CPU 上
 
 
     def update(self, memory):
