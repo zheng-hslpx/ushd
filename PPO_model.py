@@ -1,206 +1,256 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
 from torch.distributions import Categorical
+import numpy as np
 
 class Memory:
-    """存储智能体与环境交互的经验数据"""
     def __init__(self):
-        self.states = []  # 存储异构图状态
-        self.actions = []  # 存储选择的动作
-        self.logprobs = []  # 存储动作的对数概率
-        self.rewards = []  # 存储获得的奖励
-        self.is_terminals = []  # 存储是否为终止状态
-        self.state_values = []  # 存储状态价值估计
+        self.actions = []
+        self.states = []
+        self.logprobs = []
+        self.rewards = []
+        self.is_terminals = []
+        self.state_values = [] # 新增：存储旧的状态价值
 
     def clear_memory(self):
-        """清空内存中的所有经验数据"""
-        del self.states[:]
         del self.actions[:]
+        del self.states[:]
         del self.logprobs[:]
         del self.rewards[:]
         del self.is_terminals[:]
-        del self.state_values[:]
+        del self.state_values[:] # 新增：清空旧的状态价值
+
+class ActorCritic(nn.Module):
+    def __init__(self, hgnn, action_dim, has_continuous_action_space=False, action_std_init=0.6):
+        super(ActorCritic, self).__init__()
+
+        self.has_continuous_action_space = has_continuous_action_space
+        self.hgnn = hgnn  # 注入的HGNN模型，用于特征提取
+        self.action_dim = action_dim # Store action_dim
+
+        # Actor: 输出动作概率 (分类分布)
+        # 假设 HGNN 输出的全局特征维度为 hidden_dim (例如 32)
+        # 我们需要知道这个维度来定义 Actor 和 Critic 网络
+        # 一个常见的做法是在第一次调用 forward 时动态获取或要求传入
+        # 这里我们假设在 PPO 初始化时已经知道 hidden_dim 并传递给了 HGNN
+        # 因此，HGNN 的 forward 应该返回一个固定大小的向量
+        # 例如，如果 HGNN(hidden_dim=32)，则输出是 [32]
+        # self.actor = None # 将在首次 act/evaluate 时定义
+        # self.critic = None # 将在首次 act/evaluate 时定义
+
+    def set_action_std(self, new_action_std):
+        if self.has_continuous_action_space:
+            # ... (连续动作空间逻辑不变)
+            print("--------------------------------------------------------------------------------------------")
+            print("WARNING: set_action_std has no effect. ActorCritic does not use continuous action space.")
+            print("--------------------------------------------------------------------------------------------")
+        else:
+            print("--------------------------------------------------------------------------------------------")
+            print("WARNING: set_action_std has no effect. ActorCritic does not use continuous action space.")
+            print("--------------------------------------------------------------------------------------------")
 
 
-class PPO(nn.Module):
-    """近端策略优化算法的实现"""
-    def __init__(self, hgnn, action_dim, lr, gamma, eps_clip, K_epochs, device):
-        """
-        初始化PPO模型
-        参数:
-            hgnn: 异构图神经网络，用于特征提取
-            action_dim: 动作空间维度
-            lr: 学习率
-            gamma: 折扣因子
-            eps_clip: PPO裁剪参数
-            K_epochs: 每次更新的训练轮数
-            device: 计算设备（CPU或GPU）
-        """
-        super(PPO, self).__init__()
-        self.hgnn = hgnn
-        self.action_dim = action_dim
+    def forward(self):
+        raise NotImplementedError
+
+    def act(self, state, device): # 修正：添加 device 参数
+        # 通过HGNN提取特征 (假设 state 是一个 DGL 图)
+        # 根据修改后的 hgnn.py，self.hgnn(state) 现在返回一个 [hidden_dim] 的张量
+        graph_embedding = self.hgnn(state) # Shape: [hidden_dim]
+
+        # 确保 graph_embedding 在正确的设备上
+        graph_embedding = graph_embedding.to(device)
+
+        # 定义 Actor 和 Critic 网络（在首次调用时）
+        # 检查是否已定义网络头
+        if not hasattr(self, 'actor_head'):
+             embedding_dim = graph_embedding.shape[0] # 获取隐藏层维度
+             self.actor_head = nn.Sequential(
+                 nn.Linear(embedding_dim, 64),
+                 nn.Tanh(),
+                 nn.Linear(64, 64),
+                 nn.Tanh(),
+                 nn.Linear(64, self.action_dim) # 输出与动作空间匹配
+             ).to(device)
+             self.critic_head = nn.Sequential(
+                 nn.Linear(embedding_dim, 64),
+                 nn.Tanh(),
+                 nn.Linear(64, 64),
+                 nn.Tanh(),
+                 nn.Linear(64, 1)
+             ).to(device)
+
+        # 计算动作概率和状态价值
+        action_logits = self.actor_head(graph_embedding) # Shape: [action_dim]
+        action_probs = torch.softmax(action_logits, dim=-1)
+        dist = Categorical(action_probs)
+        action = dist.sample()
+        action_logprob = dist.log_prob(action)
+        state_val = self.critic_head(graph_embedding) # Shape: [1]
+
+        return action.detach().cpu().item(), action_logprob.detach(), state_val.detach()
+        # 返回标量 action (转为 CPU item)，logprob，state_val
+
+
+    def evaluate(self, states, actions):
+        # states 是一个列表，包含多个 DGL 图 (Memory 中存储的)
+        # actions 是一个包含动作索引的 tensor
+        if not isinstance(states, list):
+            raise ValueError("states should be a list of DGL graphs for batch evaluation.")
+
+        # 批量通过 HGNN 处理图
+        graph_embeddings = []
+        for s in states:
+            emb = self.hgnn(s) # 对每个图调用 HGNN，得到 [hidden_dim]
+            graph_embeddings.append(emb)
+        graph_embeddings = torch.stack(graph_embeddings) # Shape: [batch_size, hidden_dim]
+        batch_size = graph_embeddings.shape[0]
+
+        # 确保网络头已定义 (通常在 act 之后已定义)
+        device = graph_embeddings.device
+        if not hasattr(self, 'actor_head'):
+             # Fallback: 如果 evaluate 在 act 之前被调用 (不太可能在PPO流程中)
+             # 但这保证了安全性
+             embedding_dim = graph_embeddings.shape[1]
+             self.actor_head = nn.Sequential(
+                 nn.Linear(embedding_dim, 64),
+                 nn.Tanh(),
+                 nn.Linear(64, 64),
+                 nn.Tanh(),
+                 nn.Linear(64, self.action_dim)
+             ).to(device)
+             self.critic_head = nn.Sequential(
+                 nn.Linear(embedding_dim, 64),
+                 nn.Tanh(),
+                 nn.Linear(64, 64),
+                 nn.Tanh(),
+                 nn.Linear(64, 1)
+             ).to(device)
+
+        # 计算动作概率和状态价值
+        action_logits = self.actor_head(graph_embeddings) # Shape: [batch_size, action_dim]
+        action_probs = torch.softmax(action_logits, dim=-1)
+        dist = Categorical(action_probs)
+
+        action_logprobs = dist.log_prob(actions)
+        dist_entropy = dist.entropy()
+        state_values = self.critic_head(graph_embeddings) # Shape: [batch_size, 1]
+
+        return action_logprobs, torch.squeeze(state_values, -1), dist_entropy
+        # 返回 [batch_size,], [batch_size,], [batch_size,]
+
+
+class PPO:
+    def __init__(self, hgnn, action_dim, lr=3e-4, gamma=0.99, eps_clip=0.2, K_epochs=10, device='cpu'):
         self.gamma = gamma
         self.eps_clip = eps_clip
         self.K_epochs = K_epochs
         self.device = device
-        self.MseLoss = nn.MSELoss() # 将 MseLoss 移到 __init__ 中，更规范
 
-        # 策略网络：将HGNN提取的特征映射到动作概率分布
-        self.policy = nn.Sequential(
-            nn.Linear(self.hgnn.global_pool.out_features, 128),
-            nn.Tanh(),
-            nn.Linear(128, 64),
-            nn.Tanh(),
-            nn.Linear(64, action_dim),
-            nn.Softmax(dim=-1)  # 输出动作概率分布
-        ).to(device)
-
-        # 价值网络：估计当前状态的价值
-        self.value_net = nn.Sequential(
-            nn.Linear(self.hgnn.global_pool.out_features, 128),
-            nn.Tanh(),
-            nn.Linear(128, 64),
-            nn.Tanh(),
-            nn.Linear(64, 1)  # 输出状态价值
-        ).to(device)
-
-        # 旧策略网络：用于计算策略更新的重要性采样比率
-        self.policy_old = nn.Sequential(
-            nn.Linear(self.hgnn.global_pool.out_features, 128),
-            nn.Tanh(),
-            nn.Linear(128, 64),
-            nn.Tanh(),
-            nn.Linear(64, action_dim),
-            nn.Softmax(dim=-1)
-        ).to(device)
-        self.policy_old.load_state_dict(self.policy.state_dict())  # 初始化为与当前策略相同
-
-        # 优化器：同时优化策略网络、价值网络和HGNN
-        self.optimizer = optim.Adam(
-            list(self.policy.parameters()) +
-            list(self.value_net.parameters()) +
-            list(self.hgnn.parameters()),
-            lr=lr
-        )
-
-    def forward(self, graph):
-        """
-        前向传播计算动作概率和状态价值
-        参数:
-            graph: 异构图状态
-        返回:
-            action_probs: 动作概率分布
-            state_value: 状态价值估计
-        """
-        # 通过HGNN提取全局状态表示
-        _, _, global_h = self.hgnn(graph)
-        # 计算动作概率分布
-        action_probs = self.policy(global_h)
-        # 计算状态价值
-        state_value = self.value_net(global_h)
-        return action_probs, state_value
-
-    def select_action(self, graph):
-        """
-        根据当前状态选择动作，并记录相关信息
-        参数:
-            graph: 异构图状态
-        返回:
-            action.item(): 选择的动作索引
-            dist.log_prob(action): 动作的对数概率
-            state_value.item(): 状态价值估计
-        """
-        # 计算动作概率和状态价值
-        action_probs, state_value = self.forward(graph)
-        # 创建分类分布
-        dist = Categorical(action_probs)
-        # 从分布中采样动作
-        action = dist.sample()
-        # 记录动作、对数概率和状态价值
-        return action.item(), dist.log_prob(action), state_value.item()
-
-    def update(self, memory):
-        """
-        使用存储的经验数据更新策略
-        参数:
-            memory: 存储经验数据的Memory对象
-        返回:
-            avg_policy_loss.item(), avg_value_loss.item(): 本轮更新的平均策略损失和价值损失
-        """
-        # 修复：将zip对象转换为列表后再反转（解决'zip' object is not reversible错误）
-        rewards = []
-        discounted_reward = 0
-        # 先将zip结果转为列表，再反转
-        for reward, is_terminal in reversed(list(zip(memory.rewards, memory.is_terminals))):
-            if is_terminal:
-                discounted_reward = 0  # 如果是终止状态，重置累积奖励
-            discounted_reward = reward + (self.gamma * discounted_reward)
-            rewards.insert(0, discounted_reward)  # 插入到列表开头，保持时间顺序
-
-        # 标准化奖励以稳定训练
-        rewards = torch.tensor(rewards, dtype=torch.float32).to(self.device)
-        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-7)
-
-        # 提取经验数据
-        old_states = memory.states
-        old_actions = torch.tensor(memory.actions, dtype=torch.long).to(self.device)
-        old_logprobs = torch.tensor(memory.logprobs, dtype=torch.float32).to(self.device)
-        old_state_values = torch.tensor(memory.state_values, dtype=torch.float32).to(self.device)
-
-        # 计算优势函数：实际奖励与估计价值的差异
-        advantages = rewards - old_state_values.detach()
-
-        # --- 新增：用于存储每轮的损失 ---
-        policy_losses = []
-        value_losses = []
+        self.policy = ActorCritic(hgnn, action_dim).to(device)
+        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=lr)
+        # --- 可选：添加学习率调度器 ---
+        # self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=500, gamma=0.9)
         # -----------------------------
 
-        # 多次迭代更新策略，提高样本效率
-        for _ in range(self.K_epochs):
-            logprobs = []
-            state_values = []
-            # 对每个存储的状态重新计算动作概率和状态价值
-            for state in old_states:
-                action_probs, state_val = self.forward(state)
-                dist = Categorical(action_probs)
-                logprobs.append(dist.log_prob(old_actions))
-                state_values.append(state_val)
-
-            # 整理张量形状
-            logprobs = torch.stack(logprobs).to(self.device)
-            state_values = torch.stack(state_values).squeeze().to(self.device)
-
-            # 计算重要性采样比率：新策略与旧策略的概率比值
-            ratios = torch.exp(logprobs - old_logprobs.detach())
-
-            # 计算PPO的裁剪目标函数
-            surr1 = ratios * advantages
-            surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
-            policy_loss = -torch.min(surr1, surr2).mean()  # 取负号因为要最大化
-            policy_losses.append(policy_loss) # 记录策略损失
-
-            # 计算价值损失
-            value_loss = 0.5 * self.MseLoss(state_values, rewards)
-            value_losses.append(value_loss) # 记录价值损失
-
-            # 总损失
-            loss = policy_loss + value_loss
-
-            # 反向传播和优化
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
-
-        # 更新旧策略网络，使其与当前策略一致
+        self.policy_old = ActorCritic(hgnn, action_dim).to(device)
         self.policy_old.load_state_dict(self.policy.state_dict())
 
-        # --- 新增：清空内存 ---
-        memory.clear_memory()
-        # -----------------------
+        # --- 损失函数 ---
+        self.loss_fn = nn.SmoothL1Loss() # 使用更稳定的损失函数
 
-        # --- 新增：计算并返回平均损失 ---
-        avg_policy_loss = torch.stack(policy_losses).mean()
-        avg_value_loss = torch.stack(value_losses).mean()
-        return avg_policy_loss.item(), avg_value_loss.item() # 返回标量值
-        # ---------------------------------
+
+    def select_action(self, state):
+        # state 是一个 DGL 图
+        with torch.no_grad():
+            action, action_logprob, state_value = self.policy_old.act(state, self.device)
+
+        # action 已经是 cpu().item()
+        return action, action_logprob.cpu(), state_value.cpu() # 确保返回的 tensor 在 CPU 上
+
+
+    def update(self, memory):
+        # Monte Carlo estimate of state rewards:
+        rewards = []
+        discounted_reward = 0
+        # --- 逆序计算折扣回报 ---
+        for reward, is_terminal in zip(reversed(memory.rewards), reversed(memory.is_terminals)):
+            if is_terminal:
+                discounted_reward = reward
+            else:
+                discounted_reward = reward + (self.gamma * discounted_reward)
+            rewards.insert(0, discounted_reward)
+        # -------------------------------
+
+        # Normalizing the rewards:
+        rewards = torch.tensor(rewards, dtype=torch.float32).to(self.device)
+        # --- 添加数值稳定性 ---
+        reward_std = rewards.std()
+        if reward_std > 1e-6: # 避免除以零或极小的数
+            rewards = (rewards - rewards.mean()) / (reward_std + 1e-8)
+        else:
+             rewards = rewards - rewards.mean() # 仅中心化
+        # -----------------------------
+
+        # Convert list to tensor
+        old_states = memory.states # List of DGL graphs
+        old_actions = torch.tensor(memory.actions, dtype=torch.long).to(self.device)
+        old_logprobs = torch.stack(memory.logprobs).to(self.device)
+        # --- 新增：获取旧的状态价值 ---
+        old_state_values = torch.stack(memory.state_values).to(self.device).detach() # detach is crucial
+        # -------------------------------
+
+        # Optimize policy for K epochs:
+        policy_loss_accum = 0.0
+        value_loss_accum = 0.0
+        for _ in range(self.K_epochs):
+            # Evaluating old actions and values:
+            logprobs, state_values, dist_entropy = self.policy.evaluate(old_states, old_actions)
+            state_values = torch.squeeze(state_values)
+
+            # Finding the ratio (pi_theta / pi_theta__old):
+            ratios = torch.exp(logprobs - old_logprobs.detach())
+
+            # Finding Surrogate Loss:
+            # --- 使用 detach 的旧状态价值计算优势 ---
+            advantages = rewards - old_state_values.squeeze(-1) # 确保维度匹配 [batch_size]
+            # --------------------------------------------
+            surr1 = ratios * advantages
+            surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
+
+            # --- 分别计算策略损失和价值损失 ---
+            policy_loss = -torch.min(surr1, surr2).mean()
+            value_loss = self.loss_fn(state_values, rewards) # 使用更稳定的损失函数
+            entropy_loss = -0.01 * dist_entropy.mean() # 熵正则化项 (系数可调)
+
+            # Total loss
+            loss = policy_loss + 0.5 * value_loss + entropy_loss
+            # ------------------------------------
+
+            # Take gradient step
+            self.optimizer.zero_grad()
+            loss.backward()
+            # --- 可选：添加梯度裁剪 ---
+            # torch.nn.utils.clip_grad_norm_(self.policy.parameters(), 0.5)
+            # -------------------------
+            self.optimizer.step()
+
+            # Accumulate losses for averaging
+            policy_loss_accum += policy_loss.item()
+            value_loss_accum += value_loss.item()
+
+        # --- 可选：更新学习率调度器 ---
+        # if hasattr(self, 'scheduler'):
+        #     self.scheduler.step()
+        # -----------------------------
+
+        # Copy new weights into old policy:
+        self.policy_old.load_state_dict(self.policy.state_dict())
+
+        # Clear memory
+        memory.clear_memory()
+
+        # Return average losses
+        avg_policy_loss = policy_loss_accum / self.K_epochs
+        avg_value_loss = value_loss_accum / self.K_epochs
+        return avg_policy_loss, avg_value_loss # 返回平均损失
