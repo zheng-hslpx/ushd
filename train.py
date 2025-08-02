@@ -194,13 +194,13 @@ def main():
     hidden_dim = 32  # 隐藏层维度
     n_heads = 4  # GAT注意力头数
     num_layers = 2  # HGNN层数
-    max_episodes = 100  # 最大训练回合数
+    max_episodes = 50  # 最大训练回合数
     max_steps = num_tasks * 2  # 每回合最大步数
     lr = 3e-4  # 学习率 (从 3e-4 降低到 1e-4)
     gamma = 0.98  # 折扣因子
     eps_clip = 0.2  # PPO裁剪参数 (从 0.2 降低到 0.1)
     K_epochs = 10  # 每次更新的训练轮数
-    early_stop_patience = 100  # 早停耐心值
+    early_stop_patience = 50  # 早停耐心值
     eta = 2  # 构建图时考虑的最近邻数量
     # ----------------------------------
     # 创建模型保存目录
@@ -240,8 +240,7 @@ def main():
         eps_clip=eps_clip,
         K_epochs=K_epochs,
         device=device
-    ) # <-- 移除 .to(device)
-    # device 已经在 PPO 的 __init__ 方法内部被用来移动其包含的 nn.Module (ActorCritic) 到设备上
+    ) # 注意：PPO类本身没有.to(device)方法，其内部网络应在__init__中处理
     # 初始化TensorBoard日志记录器
     writer = SummaryWriter("runs/usv_scheduling")
     # 初始化visdom
@@ -265,8 +264,9 @@ def main():
                     xlabel='Episode',
                     ylabel='Reward',
                     title='Training Reward',
-                    ylim=[-3200, 0],
-                    ytickmarks=list(range(-3200, 0, 50))
+                    ylim=[-3200, 0],  # 设置Y轴范围
+                    ytickmarks=list(range(-3200, 1, 50)) # 设置Y轴刻度间隔为50，从-3200到0（包含0）
+                    # ytickvals=list(range(-3200, 1, 50)) # Visdom有时使用ytickvals，但ytickmarks更常见
                 )
             )
             makespan_window = vis.line(
@@ -276,6 +276,9 @@ def main():
                     xlabel='Episode',
                     ylabel='Makespan',
                     title='Training Makespan'
+                    # 设置 Y 轴范围为 [0, 800]，并增加刻度间隔
+                    # ylim=[0, 800],
+                    # ytickmarks=[0, 200, 400, 600, 800]
                 )
             )
             # --- 新增：创建 Policy Loss 和 Value Loss 的 Visdom 窗口，细化 Y 轴范围和刻度 ---
@@ -285,7 +288,10 @@ def main():
                 opts=dict(
                     xlabel='Episode',
                     ylabel='Loss',
-                    title='Policy Loss'
+                    title='Policy Loss',
+                    # 设置 Y 轴范围为 [-1.5, 0.5]，并增加刻度间隔
+                    # ylim=[-1.5, 0.5],
+                    # ytickmarks=[-1.5, -1.0, -0.5, 0.0, 0.5]
                 )
             )
             value_loss_window = vis.line(
@@ -294,7 +300,10 @@ def main():
                 opts=dict(
                     xlabel='Episode',
                     ylabel='Loss',
-                    title='Value Loss'
+                    title='Value Loss',
+                    # 设置 Y 轴范围为 [-1.5, 0.5]，并增加刻度间隔
+                    # ylim=[-1.5, 0.5],
+                    # ytickmarks=[-1.5, -1.0, -0.5, 0.0, 0.5]
                 )
             )
             # ----------------------------------------------------------------
