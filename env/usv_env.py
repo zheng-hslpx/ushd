@@ -6,14 +6,17 @@ import logging
 
 class USVSchedulingEnv(gym.Env):
     def __init__(self, num_usvs=3, num_tasks=30, area_size_x=(0, 500), area_size_y=(0, 500),
-                 processing_time_range=(20, 60), battery_capacity=100, speed_range=(1, 3), charge_time=5):
+                 processing_time_range=(45, 90), battery_capacity=100, speed_range=(1, 3), charge_time=5):
         super().__init__()
         # 定义观测空间和动作空间（形状与任务/USV数量匹配）
+        # --- 修改：在 observation_space 中添加 action_mask ---
         self.observation_space = spaces.Dict({
             'usv_features': spaces.Box(low=0, high=1, shape=(num_usvs, 4)),  # [x, y, battery, speed]
             'task_features': spaces.Box(low=0, high=100, shape=(num_tasks, 6)),  # [x, y, t1, t2, t3, is_pending]
-            'edge_features': spaces.Box(low=0, high=100, shape=(num_usvs, num_tasks))  # 距离矩阵
+            'edge_features': spaces.Box(low=0, high=100, shape=(num_usvs, num_tasks)),  # 距离矩阵
+            'action_mask': spaces.Box(low=0, high=1, shape=(num_usvs * num_tasks,), dtype=np.bool_)  # <-- 新增
         })
+        # --- 修改结束 ---
         self.action_space = spaces.Discrete(num_usvs * num_tasks)  # 动作空间维度匹配
         # 初始化环境参数
         self.num_usvs = num_usvs
@@ -89,27 +92,27 @@ class USVSchedulingEnv(gym.Env):
         usv_idx = action // self.num_tasks  # 解USV索引
         task_idx = action % self.num_tasks  # 解析任务索引
 
-        # --- 修改：启用并强化动作有效性检查 ---
-        # 检查动作是否有效：任务是否已被调度
-        if task_idx in self.scheduled_tasks:
-            # PPO 选择了已调度的任务，这是一个无效动作。
-            # 给予一个相对温和但明显的惩罚，并返回当前状态，不执行任何操作。
-            # 原惩罚 reward = -50.0 可能过强，会掩盖 makespan 奖励信号。
-            # 调整为一个与典型 step 奖励量级相近的值。
-            penalty_magnitude = 15.0  # <--- 调整这个值进行实验 (例如 10.0, 20.0)
-            print(
-                f"Warning: Action {action} selected already scheduled task {task_idx} for USV {usv_idx}. Penalizing ({-penalty_magnitude}) and ignoring.")
-            reward = -penalty_magnitude
-            done = False
-            info = {
-                "invalid_action": True,
-                "reason": "task_already_scheduled",
-                "action_taken": action,
-                "penalty": reward
-            }
-            # 返回当前状态，不更新环境
-            return self._get_observation(), reward, done, info
-        # --- 修改结束 ---
+        # # --- 修改：启用并强化动作有效性检查 ---
+        # # 检查动作是否有效：任务是否已被调度
+        # if task_idx in self.scheduled_tasks:
+        #     # PPO 选择了已调度的任务，这是一个无效动作。
+        #     # 给予一个相对温和但明显的惩罚，并返回当前状态，不执行任何操作。
+        #     # 原惩罚 reward = -50.0 可能过强，会掩盖 makespan 奖励信号。
+        #     # 调整为一个与典型 step 奖励量级相近的值。
+        #     penalty_magnitude = 15.0  # <--- 调整这个值进行实验 (例如 10.0, 20.0)
+        #     print(
+        #         f"Warning: Action {action} selected already scheduled task {task_idx} for USV {usv_idx}. Penalizing ({-penalty_magnitude}) and ignoring.")
+        #     reward = -penalty_magnitude
+        #     done = False
+        #     info = {
+        #         "invalid_action": True,
+        #         "reason": "task_already_scheduled",
+        #         "action_taken": action,
+        #         "penalty": reward
+        #     }
+        #     # 返回当前状态，不更新环境
+        #     return self._get_observation(), reward, done, info
+        # # --- 修改结束 ---
 
         # 获取USV和任务信息
         usv_pos = self.usv_positions[usv_idx]
@@ -248,10 +251,24 @@ class USVSchedulingEnv(gym.Env):
             for j in range(self.num_tasks):
                 if j not in self.scheduled_tasks:
                     distances[i, j] = np.linalg.norm(self.usv_positions[i] - self.tasks['coords'][j])
+
+        # --- 新增：生成 Action Mask ---
+        # 动作空间大小为 num_usvs * num_tasks
+        # action_mask[i * num_tasks + j] 为 True 表示 USV i 执行任务 j 是有效的
+        # 一个动作有效当且仅当对应的任务 j 尚未被调度
+        action_mask = np.zeros(self.num_usvs * self.num_tasks, dtype=np.bool_)  # 初始化全为 False
+        for task_idx in range(self.num_tasks):
+            if task_idx not in self.scheduled_tasks:
+                # 如果任务未被调度，则所有 USV 都可以执行它
+                start_idx = task_idx
+                end_idx = self.num_usvs * self.num_tasks
+                action_mask[start_idx::self.num_tasks] = True  # 每隔 num_tasks 个位置设为 True
+
         return {
             'usv_features': usv_features.astype(np.float32),
             'task_features': task_features.astype(np.float32),
-            'edge_features': distances.astype(np.float32)
+            'edge_features': distances.astype(np.float32),
+            'action_mask': action_mask  # <-- 新增返回 action_mask
         }
 
     def render(self, mode='human'):
