@@ -1,5 +1,5 @@
-# usv
-更新：2025.7.12 usv-scheduling-hgnn-drl/ 
+# ushd
+更新：2025.8.2 usv-scheduling-hgnn-drl/ 
 ├── data/ # 数据存储
 ├── env/ # 环境定义 
 ├── graph/ # 图神经网络模块 
