@@ -15,6 +15,17 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 import matplotlib.ticker as ticker
+import logging
+
+# 配置根 logger
+logging.basicConfig(
+    level=logging.DEBUG,  # 设置最低处理级别为 DEBUG
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', # 日志格式
+    handlers=[
+        logging.StreamHandler()  # 输出到控制台
+        # 如果你也想输出到文件，可以添加 logging.FileHandler('app.log')
+    ]
+)
 
 # 超参数：固定任务和USV数量（核心：与环境保持一致）
 num_usvs = 3  # USV数量
@@ -61,7 +72,7 @@ def generate_gantt_chart(env):
     """
     生成并显示甘特图，为每个调度的任务添加任务编号标识。
     修改：
-    1. 为每个任务分配唯一颜色（至少300种）。
+    1. 为每个 USV 分配唯一颜色（共 num_usvs 种）。
     2. 细化 X 轴刻度间隔。
     3. 添加航行时间条（灰色）并标注 "Navigation"。
     4. 确保每个 USV 的任务是独立绘制的。
@@ -73,12 +84,12 @@ def generate_gantt_chart(env):
 
     fig, ax = plt.subplots(figsize=(15, 8)) # 增加图形尺寸
 
-    # --- 修改 1：生成唯一颜色 ---
-    # 生成至少 num_tasks 个唯一颜色，上限为 300
-    num_colors_needed = max(env.num_tasks, 300)
-    # 使用 HSV 色彩空间生成区分度高的颜色
-    hues = np.linspace(0, 1, num_colors_needed, endpoint=False)
-    colors_list = [mcolors.hsv_to_rgb((h, 0.9, 0.8)) for h in hues]
+    # --- 修改 1：为每个 USV 生成唯一颜色 ---
+    # 生成与 USV 数量相等的唯一颜色
+    num_usvs = env.num_usvs
+    # 使用 HSV 色彩空间为 USV 生成区分度高的颜色
+    hues = np.linspace(0, 1, num_usvs, endpoint=False)
+    usv_colors_list = [mcolors.hsv_to_rgb((h, 0.8, 0.8)) for h in hues] # 调整饱和度和亮度使颜色更柔和
     # --- 修改结束 ---
 
     # 用于存储每个 USV 的任务及其时间信息
@@ -127,8 +138,14 @@ def generate_gantt_chart(env):
             print(f"Warning: No task data to plot for USV {usv_idx}.")
             continue
 
+        # --- 使用为当前 USV 预先分配的颜色 ---
+        current_usv_color = usv_colors_list[usv_idx]
+
         for task_data in tasks_data:
             try:
+                # print(f"Debug - USV {usv_idx}, Task {task_idx}: "
+                #       f"travel_start={travel_start_time:.2f}, travel_time={travel_time:.2f}, "
+                #       f"processing_start={processing_start_time:.2f}, processing_time={processing_time:.2f}")
                 task_idx = task_data['task_idx']  # 确保 task_idx 存在
                 processing_start_time = task_data['processing_start_time']
                 processing_time = task_data['processing_time']
@@ -138,11 +155,11 @@ def generate_gantt_chart(env):
                 # --- 修改 3：绘制航行时间条 ---
                 if travel_time > 0:
                     ax.barh(y_pos, travel_time, left=travel_start_time, height=bar_height, color='gray', label='Navigation' if usv_idx == 0 and task_idx == usv_task_data[usv_idx][0]['task_idx'] else "")
-                # --- 绘制处理时间条 ---
-                ax.barh(y_pos, processing_time, left=processing_start_time, height=bar_height, color=colors_list[task_idx])
-                # --- 在处理时间条中心添加任务编号 ---
+                # --- 绘制处理时间条 (使用 USV 的颜色) ---
+                ax.barh(y_pos, processing_time, left=processing_start_time, height=bar_height, color=current_usv_color)
+                # --- 在处理时间条中心添加任务编号 (修改字体大小和颜色以更显眼) ---
                 ax.text(processing_start_time + processing_time/2, y_pos, f'{task_idx}',
-                        ha='center', va='center', fontsize=8, color='white')
+                        ha='center', va='center', fontsize=9, color='black', weight='bold') # 增大字体，加粗，使用黑色
             except KeyError as e:
                 print(f"Error plotting task for USV {usv_idx}: Missing key {e} in task_data {task_data}")
             except Exception as e:
@@ -194,13 +211,13 @@ def main():
     hidden_dim = 32  # 隐藏层维度
     n_heads = 4  # GAT注意力头数
     num_layers = 2  # HGNN层数
-    max_episodes = 50  # 最大训练回合数
-    max_steps = num_tasks * 2  # 每回合最大步数
+    max_episodes = 100  # 最大训练回合数
+    max_steps = num_tasks * 10  # 每回合最大步数
     lr = 3e-4  # 学习率 (从 3e-4 降低到 1e-4)
     gamma = 0.98  # 折扣因子
     eps_clip = 0.2  # PPO裁剪参数 (从 0.2 降低到 0.1)
     K_epochs = 10  # 每次更新的训练轮数
-    early_stop_patience = 50  # 早停耐心值
+    early_stop_patience = 100  # 早停耐心值
     eta = 2  # 构建图时考虑的最近邻数量
     # ----------------------------------
     # 创建模型保存目录
@@ -436,7 +453,80 @@ def main():
     writer.close()
     print(f"训练完成！最佳完成时间: {best_makespan:.4f}")
     print(f"模型已保存至: {model_path}")
-    # --- 修改：在训练结束后生成甘特图 ---
+
+    # --- 新增：在生成甘特图前打印详细调试信息 ---
+    print("\n" + "=" * 50)
+    print("详细调试信息 - Episode 结束时:")
+    print("=" * 50)
+
+    # 1. 基本统计信息
+    print(f"  - env.scheduled_tasks 长度: {len(env.scheduled_tasks)}")
+    print(f"  - env.scheduled_tasks 内容: {env.scheduled_tasks}")
+    print(f"  - env.task_schedule_details 键数量: {len(env.task_schedule_details)}")
+    print(f"  - env.task_schedule_details 键: {list(env.task_schedule_details.keys())}")
+    print(f"  - env.current_time: {env.current_time:.4f}")
+    print(f"  - env.usv_next_available_time: {env.usv_next_available_time}")
+    # 假设最后一次 step 的 info 可能不在作用域内，我们从 env 获取最终 makespan
+    final_makespan_debug = np.max(env.makespan_batch) if env.scheduled_tasks else 0
+    print(f"  - 计算得出的最终 Makespan (np.max(makespan_batch)): {final_makespan_debug:.4f}")
+
+    # 2. USV 状态
+    print("\n  --- USV 最终状态 ---")
+    print(f"  - USV 最终位置: \n{env.usv_positions}")
+    print(f"  - USV 速度: {env.usv_speeds}")
+    print(f"  - USV 最终电量: {env.usv_batteries}")
+    # 打印 USV 执行的任务数量
+    from collections import Counter
+    usv_task_counts = Counter(env.task_assignment[env.task_assignment != -1])
+    for usv_id in range(env.num_usvs):
+        count = usv_task_counts.get(usv_id, 0)
+        print(f"  - USV {usv_id} 执行的任务数量: {count}")
+
+    # 3. 任务和 USV 初始数据 (来自最后一个使用的 instance)
+    # 注意：env.tasks 和 env.usvs 包含的是 reset_with_instances 时传入的数据
+    print("\n  --- 任务和 USV 初始数据 (来自算例) ---")
+    print(f"  - USV 初始坐标 (来自算例): \n{env.usvs['coords']}")
+    print(f"  - USV 速度 (来自算例): {env.usvs['speed']}")
+    print(f"  - 任务坐标 (前10个): \n{env.tasks['coords'][:10]}")
+    print(f"  - 任务处理时间 (前10个): \n{env.tasks['processing_time'][:10]}")
+
+    # 4. 任务分配详情 (检查重复调度等问题)
+    print("\n  --- 任务分配详情 ---")
+    scheduled_counts = Counter(env.scheduled_tasks)
+    duplicated_tasks = [task for task, count in scheduled_counts.items() if count > 1]
+    if duplicated_tasks:
+        print(f"  - 警告：发现重复调度的任务: {duplicated_tasks}")
+    else:
+        print("  - 未发现重复调度的任务。")
+
+    # 检查 task_schedule_details 中缺失的任务
+    missing_in_details = set(env.scheduled_tasks) - set(env.task_schedule_details.keys())
+    if missing_in_details:
+        print(f"  - 警告：以下已调度任务在 task_schedule_details 中缺失: {sorted(list(missing_in_details))}")
+    else:
+        print("  - 所有已调度任务都在 task_schedule_details 中有记录。")
+
+    # 5. 甘特图数据结构检查
+    print("\n  --- 甘特图数据结构检查 ---")
+    if hasattr(env, 'task_schedule_details'):
+        print("  - env.task_schedule_details 存在。")
+        # 简单检查几个条目的完整性
+        sample_keys = list(env.task_schedule_details.keys())[:3]  # 检查前3个
+        for k in sample_keys:
+            details = env.task_schedule_details[k]
+            required_keys = ['task_idx', 'usv_idx', 'travel_start_time', 'travel_time', 'processing_start_time',
+                             'processing_time']
+            missing_keys = [rk for rk in required_keys if rk not in details]
+            if missing_keys:
+                print(f"    - 警告：任务 {k} 的详情缺少键: {missing_keys}")
+            else:
+                print(f"    - 任务 {k} 的详情完整。")
+    else:
+        print("  - 警告：env.task_schedule_details 不存在！")
+
+    print("=" * 50)
+    # --- 新增结束 ---
+
     try:
         generate_gantt_chart(env) # 生成最终调度结果的甘特图
     except Exception as e:
