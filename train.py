@@ -211,13 +211,13 @@ def main():
     hidden_dim = 32  # 隐藏层维度
     n_heads = 4  # GAT注意力头数
     num_layers = 2  # HGNN层数
-    max_episodes = 100  # 最大训练回合数
+    max_episodes = 1000  # 最大训练回合数
     max_steps = num_tasks * 10  # 每回合最大步数
     lr = 3e-4  # 学习率 (从 3e-4 降低到 1e-4)
     gamma = 0.98  # 折扣因子
     eps_clip = 0.2  # PPO裁剪参数 (从 0.2 降低到 0.1)
     K_epochs = 10  # 每次更新的训练轮数
-    early_stop_patience = 100  # 早停耐心值
+    early_stop_patience = 1000  # 早停耐心值
     eta = 2  # 构建图时考虑的最近邻数量
     # ----------------------------------
     # 创建模型保存目录
@@ -351,8 +351,12 @@ def main():
             distances = calculate_usv_task_distances(usv_feats[:, :2], task_feats[:, :2])
             graph = build_heterogeneous_graph(usv_feats, task_feats, distances, eta=eta)
             graph = graph.to(device)
+            # --- 新增：将 action_mask 附加到图上 ---
+            # 假设 state 是 _get_observation 返回的 dict
+            graph.action_mask = state['action_mask']  # 将 mask 作为图的属性
             # 选择动作
-            action, log_prob, state_value = ppo.select_action(graph)
+            # action, log_prob, state_value = ppo.select_action(graph) # 原始调用
+            action, log_prob, state_value = ppo.select_action(graph)  # 修改后的调用 (select_action 会尝试获取 graph.action_mask)
             # --- 修改：执行动作并接收 info ---
             next_state, reward, done, info = env.step(action)
             # --- 修改：使用 info 中的最终 makespan ---
